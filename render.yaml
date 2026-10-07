@@ -11,6 +11,8 @@ services:
     branch: main
     autoDeploy: true
     healthCheckPath: /health
+    # Pastikan build tidak timeout sebelum model SigLIP selesai di-download
+    # ke dalam image. Default Render 15 menit, aman untuk siglip base.
 
     envVars:
       - key: AI_MODEL_NAME
@@ -32,3 +34,19 @@ services:
 
       - key: HF_HOME
         value: "/opt/hf"
+
+      # TRANSFORMERS_OFFLINE=1 + HF_HUB_OFFLINE=1 = force runtime pakai
+      # cache yang di-bake ke Docker image. TIDAK BOLEH connect ke
+      # HuggingFace saat startup → cold start hanya 15-25 detik (RAM load),
+      # bukan 120+ detik (download 400MB + load).
+      # Build stage Dockerfile sengaja override ke 0 untuk download.
+      - key: TRANSFORMERS_OFFLINE
+        value: "1"
+
+      - key: HF_HUB_OFFLINE
+        value: "1"
+
+      # Fail cepat jika cache bake tidak lengkap (tidak diam-diam fallback
+      # online yang berakibat cold start lama).
+      - key: HF_HUB_DISABLE_TELEMETRY
+        value: "1"

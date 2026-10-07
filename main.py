@@ -47,6 +47,48 @@ AI_SERVICE_TOKEN = os.getenv("AI_SERVICE_TOKEN", "")
 MAX_BATCH = int(os.getenv("AI_MAX_BATCH", "32"))
 FETCH_TIMEOUT = float(os.getenv("AI_FETCH_TIMEOUT", "15"))
 MAX_IMAGE_BYTES = int(float(os.getenv("IMAGE_MAX_SIZE_MB", "5")) * 1024 * 1024)
+FORCE_OFFLINE = str(os.getenv("TRANSFORMERS_OFFLINE", "0")).strip().lower() in ("1", "true", "yes")
+
+
+def _verify_cache_baked() -> None:
+    """Pastikan weights model SUDAH ada di HF cache (hasil bake Docker build).
+
+    Jika TRANSFORMERS_OFFLINE=1 tapi cache tidak ada, startup GAGAL dengan
+    pesan jelas — supaya tidak diam-diam fallback download dari HuggingFace
+    yang menyebabkan cold start > 120 detik dan Render 502.
+    """
+    if not FORCE_OFFLINE:
+        return
+    try:
+        from huggingface_hub import scan_cache_dir
+    except Exception as exc:  # pragma: no cover - library harusnya ada
+        logger.warning("scan_cache_dir tidak tersedia: %s", exc)
+        return
+    try:
+        cache = scan_cache_dir()
+    except Exception as exc:  # pragma: no cover
+        logger.warning("scan_cache_dir gagal: %s", exc)
+        return
+    repo_ids = {repo.repo_id for repo in cache.repos}
+    if MODEL_NAME in repo_ids:
+        logger.info(
+            "cache bake OK: model=%s ditemukan (offline mode, repo cached: %d)",
+            MODEL_NAME, len(repo_ids),
+        )
+        return
+    # Cache tidak ada — GAGAL CEPAT
+    logger.error(
+        "BAKE CACHE GAGAL: model %s TIDAK ADA di HF cache. "
+        "Cached repos: %s. "
+        "Dockerfile RUN pre-download step di build stage seharusnya mengisi cache ini. "
+        "Periksa layer cache build / HF_HOME env / TRANSFORMERS_OFFLINE saat build.",
+        MODEL_NAME, sorted(repo_ids) or ["(kosong)"],
+    )
+    raise RuntimeError(
+        f"Weights model {MODEL_NAME} tidak di-bake ke image. "
+        "Build ulang Docker (force rebuild tanpa layer cache) atau "
+        "non-aktifkan TRANSFORMERS_OFFLINE di Render env vars."
+    )
 
 # ─── Versi preprocessing ─────────────────────────────────────────────
 # Vektor hanya sebanding kalau DIBUAT dengan preprocessing yang sama, jadi tag
@@ -78,9 +120,11 @@ def _load_model() -> None:
     global _model, _processor, _dim
     if _model is not None:
         return
-    logger.info("memuat model %s ...", MODEL_NAME)
-    _processor = AutoProcessor.from_pretrained(MODEL_NAME)
-    _model = AutoModel.from_pretrained(MODEL_NAME)
+    _verify_cache_baked()
+    logger.info("memuat model %s (offline=%s) ...", MODEL_NAME, FORCE_OFFLINE)
+    load_kwargs = {"local_files_only": True} if FORCE_OFFLINE else {}
+    _processor = AutoProcessor.from_pretrained(MODEL_NAME, **load_kwargs)
+    _model = AutoModel.from_pretrained(MODEL_NAME, **load_kwargs)
     _model.eval()
     # Dimensi TIDAK di-hardcode — dibaca dari forward pass nyata supaya
     # /health.dim selalu benar walau MODEL_NAME diganti. Sengaja lewat
