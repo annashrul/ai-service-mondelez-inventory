@@ -168,12 +168,25 @@ def _views(img: Image.Image) -> List[Image.Image]:
     ]
 
 
+def _feature_tensor(output, projection_name=None) -> torch.Tensor:
+    if isinstance(output, torch.Tensor):
+        return output
+
+    pooled = getattr(output, "pooler_output", None)
+
+    if isinstance(pooled, torch.Tensor):
+        return pooled
+
+    raise TypeError(
+        f"Output model tidak dikenali: {type(output).__name__}"
+    )
+
 # ─── Encoder ─────────────────────────────────────────────────────────
 def _encode(images: List[Image.Image]) -> np.ndarray:
     """Jalankan image encoder → matriks (n, dim) yang sudah L2-normalized."""
     inputs = _processor(images=images, return_tensors="pt")
     with torch.inference_mode():
-        feats = _model.get_image_features(**inputs)
+        feats = _feature_tensor(_model.get_image_features(**inputs), "visual_projection")
     arr = feats.detach().cpu().numpy().astype("float32")
     norms = np.linalg.norm(arr, axis=1, keepdims=True)
     # Hindari pembagian nol untuk gambar degenerate.
@@ -219,7 +232,7 @@ def _embed_texts(texts: List[str]) -> np.ndarray:
     """
     inputs = _processor(text=texts, padding="max_length", return_tensors="pt")
     with torch.inference_mode():
-        feats = _model.get_text_features(**inputs)
+        feats = _feature_tensor(_model.get_text_features(**inputs), "text_projection")
     arr = feats.detach().cpu().numpy().astype("float32")
     norms = np.linalg.norm(arr, axis=1, keepdims=True)
     norms[norms == 0] = 1.0
